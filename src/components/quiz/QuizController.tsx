@@ -1,28 +1,17 @@
 import { useState, useEffect, useCallback } from "react";
 import { useToast } from "@/components/ui/use-toast";
-import { QuizConfig, QuizParticipant, QuizAnswer, ResultTemplate } from "@/types/quiz";
-import { getNextQuestionId, getPersonalizedResult, sendDataToWebhook, sendEmailGateWebhook, getQuestionText, getOptionText } from "@/utils/quizUtils";
-import { calculateScores, determineRecommendation, RecommendationState } from "@/lib/recommendationEngine";
-import IntroductionPage from "./IntroductionPage";
+import { QuizConfig, QuizParticipant, QuizAnswer } from "@/types/quiz";
+import { getNextQuestionId, sendEmailGateWebhook, getQuestionText, getOptionText } from "@/utils/quizUtils";
 import QuestionCard from "./QuestionCard";
-import OfferPage from "./OfferPage";
-import UserInfoForm from "./UserInfoForm";
-import ResultsPage from "./ResultsPage";
-import { RecommendationResults } from "./RecommendationResults";
-import EmailGateModal from "./EmailGateModal";
 import InterstitialCard from "./InterstitialCard";
 import InterstitialStep from "./InterstitialStep";
 import ProgressBar from "./ProgressBar";
-import { animationClasses, durations } from "@/lib/animations";
-
-// Feature flag to enable/disable the Email Gate without removing code
-const EMAIL_GATE_ENABLED = false;
 
 interface QuizControllerProps {
   config: QuizConfig;
 }
 
-type QuizStage = "intro" | "questions" | "interstitial-a" | "interstitial-b" | "interstitial-c" | "interstitial" | "email-gate" | "recommendations" | "results" | "thank-you";
+type QuizStage = "intro" | "questions" | "interstitial-a" | "interstitial-b" | "interstitial-c" | "interstitial" | "redirecting";
 
 const QuizController = ({ config }: QuizControllerProps) => {
   const [stage, setStage] = useState<QuizStage>("questions");
@@ -40,113 +29,73 @@ const QuizController = ({ config }: QuizControllerProps) => {
     email: "",
     answers: []
   });
-  const [isLoading, setIsLoading] = useState(false);
-  const [emailGateOpen, setEmailGateOpen] = useState(false);
+  
+  // Interstitial data state for generic interstitials (if used)
   const [interstitialData, setInterstitialData] = useState<{
     title: string;
     features: Array<{ title: string; description: string; icon?: string }>;
   } | null>(null);
-  const [recommendationState, setRecommendationState] = useState<RecommendationState | null>(null);
+
   const { toast } = useToast();
-  const [hasSentRecommendationWebhook, setHasSentRecommendationWebhook] = useState(false);
+  const [hasSentCompletionData, setHasSentCompletionData] = useState(false);
 
-  // Effect to handle completion of questions and transition to recommendations
+  // Effect to handle completion of questions and redirect
   useEffect(() => {
-    if (stage === "questions" && currentQuestionId === null && participant.answers.length > 0) {
-      // Calculate recommendations based on answers
-      const scores = calculateScores(participant.answers);
-      const recommendation = determineRecommendation(
-        scores.groupScore,
-        scores.privateScore,
-        false, // Default to not kids override
-        participant.answers
-      );
+    if (stage === "questions" && currentQuestionId === null && participant.answers.length > 0 && !hasSentCompletionData) {
+      setHasSentCompletionData(true);
+      setStage("redirecting");
       
-      setRecommendationState({
-        ...recommendation,
-        isKidsOverride: false
+      console.log("=== QUIZ COMPLETE - INITIATING WEBHOOK & REDIRECT ===");
+      
+      // 1. Prepare Data Payload
+      const humanReadableMap: Record<string, string> = {};
+      participant.answers.forEach((ans) => {
+        const qTitle = getQuestionText(ans.questionId, config);
+        const optionText = getOptionText(ans.questionId, ans.value, config);
+        humanReadableMap[qTitle] = optionText;
       });
+
+      const payloadOverride = {
+        name: "Spanish Learner",
+        email: "Spanishlearner@fallsale.com",
+        score: JSON.stringify(humanReadableMap),
+        "quizz-id": "fall-sale"
+      };
+
+      // 2. Send Webhook (Fire and forget, but log errors)
+      if (config.webhookUrl && config.webhookUrl.trim() !== "") {
+        console.log("Sending completion webhook...");
+        sendEmailGateWebhook(config.webhookUrl, "Spanishlearner@fallsale.com", payloadOverride)
+          .then((success) => console.log("Webhook sent successfully:", success))
+          .catch((error) => console.error("Webhook send failed:", error));
+      } else {
+        console.log("No webhook URL configured, skipping.");
+      }
+
+      // 3. Send Redirect Message to Parent
+      const redirectUrl = "https://spanishvip.com/sale/new-year/adults/";
+      console.log(`Sending redirect message for URL: ${redirectUrl}`);
       
-      // Go directly to recommendations and optionally open email gate
-      setStage("recommendations");
-      if (EMAIL_GATE_ENABLED) {
-        setEmailGateOpen(true);
-      }
-    }
-  }, [stage, currentQuestionId, participant.answers]);
-
-  // Trigger webhook once when entering recommendations if email gate is disabled
-  useEffect(() => {
-    if (stage === "recommendations" && !EMAIL_GATE_ENABLED && !hasSentRecommendationWebhook) {
-      console.log("=== RECOMMENDATION WEBHOOK TRIGGER START ===");
-      console.log("Config webhook URL:", config.webhookUrl);
       try {
-        if (config.webhookUrl && config.webhookUrl.trim() !== "") {
-          const humanReadableMap: Record<string, string> = {};
-          participant.answers.forEach((ans) => {
-            const qTitle = getQuestionText(ans.questionId, config);
-            const optionText = getOptionText(ans.questionId, ans.value, config);
-            humanReadableMap[qTitle] = optionText;
-          });
-
-          const payloadOverride = {
-            name: "Spanish Learner",
-            email: "Spanishlearner@fallsale.com",
-            score: JSON.stringify(humanReadableMap),
-            "quizz-id": "fall-sale"
-          };
-
-          console.log("Recommendation webhook payload override:", JSON.stringify(payloadOverride, null, 2));
-
-          sendEmailGateWebhook(config.webhookUrl, "Spanishlearner@fallsale.com", payloadOverride)
-            .then((success) => {
-              console.log("Recommendation webhook send result:", success);
-            })
-            .catch((error) => {
-              console.error("Recommendation webhook send error:", error);
-            })
-            .finally(() => {
-              setHasSentRecommendationWebhook(true);
-              console.log("=== RECOMMENDATION WEBHOOK TRIGGER END ===");
-            });
-        } else {
-          console.log("No webhook URL configured; skipping recommendation webhook.");
-          setHasSentRecommendationWebhook(true);
+        window.parent.postMessage({
+          action: 'redirect',
+          url: redirectUrl
+        }, '*'); 
+        // Note: targetOrigin is '*' to allow any parent to receive the message. 
+        // In production, you might want to restrict this if known.
+        
+        // Fallback for direct access (not in iframe)
+        if (window.parent === window) {
+           console.log("Not in iframe, redirecting directly window.location");
+           window.location.href = redirectUrl;
         }
-      } catch (err) {
-        console.error("Error building/sending recommendation webhook payload:", err);
-        setHasSentRecommendationWebhook(true);
+      } catch (e) {
+        console.error("Error sending postMessage:", e);
+        // Fallback
+        window.location.href = redirectUrl;
       }
     }
-  }, [stage, hasSentRecommendationWebhook, config.webhookUrl, participant.answers, config]);
-
-  const handleStartQuiz = () => {
-    console.log("Starting quiz");
-    setStage("questions");
-    // Add first question to history when starting
-    if (config.questions.length > 0) {
-      setQuestionHistory([config.questions[0].id]);
-    }
-  };
-
-  const handleViewResults = () => {
-    console.log("Viewing results directly");
-    setStage("results");
-  };
-
-  // Mock data for direct results viewing
-  const mockParticipant: QuizParticipant = {
-    name: "Demo User",
-    email: "demo@example.com",
-    answers: []
-  };
-
-  const mockPersonalizedResult: ResultTemplate = {
-    id: "demo-result",
-    title: "Your Personalized Spanish Learning Path",
-    description: "Based on your responses, you're ready to start your Spanish learning journey! Our program is designed specifically for adults 50+ who want to learn Spanish confidently and effectively. You'll benefit from our structured approach that combines conversation practice with grammar fundamentals, all at your own pace.",
-    conditions: []
-  };
+  }, [stage, currentQuestionId, participant.answers, hasSentCompletionData, config]);
 
   const handleAnswer = (answer: QuizAnswer) => {
     console.log("Answer received:", answer);
@@ -190,11 +139,8 @@ const QuizController = ({ config }: QuizControllerProps) => {
   
   const handleNext = useCallback(() => {
     if (!currentQuestionId) {
-      console.log("No current question ID, cannot proceed to next question");
       return;
     }
-    
-    console.log("Moving from question:", currentQuestionId);
     
     // Find next question ID
     const nextQuestionId = getNextQuestionId(
@@ -202,8 +148,6 @@ const QuizController = ({ config }: QuizControllerProps) => {
       participant.answers,
       config.questions
     );
-    
-    console.log("Next question ID determined:", nextQuestionId);
     
     if (nextQuestionId) {
       // Check if we should show an interstitial
@@ -230,7 +174,6 @@ const QuizController = ({ config }: QuizControllerProps) => {
       }
     } else {
       // End of questions
-      console.log("No more questions. Proceeding to user info form.");
       setCurrentQuestionId(null);
     }
   }, [currentQuestionId, participant.answers, config.questions, shouldShowInterstitial]);
@@ -297,11 +240,8 @@ const QuizController = ({ config }: QuizControllerProps) => {
 
   const handlePrevious = useCallback(() => {
     if (questionHistory.length <= 1) {
-      console.log("Already at first question, cannot go back");
       return;
     }
-    
-    console.log("Going back from question:", currentQuestionId);
     
     // Check if we're coming from an interstitial
     if (currentInterstitial) {
@@ -323,79 +263,6 @@ const QuizController = ({ config }: QuizControllerProps) => {
     }, 50);
   }, [questionHistory, currentInterstitial, handleInterstitialBack]);
 
-  const handleEmailSubmit = (email: string) => {
-    // Update participant info
-    const updatedParticipant = {
-      ...participant,
-      email,
-      name: participant.name || "Spanish Learner" // Default name if not provided
-    };
-    setParticipant(updatedParticipant);
-    
-    // Send simplified data to email gate webhook if configured
-    console.log("=== QUIZ CONTROLLER EMAIL GATE WEBHOOK DEBUG ===");
-    console.log("Config webhook URL:", config.webhookUrl);
-    console.log("Email submitted:", email);
-    
-    if (config.webhookUrl && config.webhookUrl.trim() !== "") {
-      console.log("Webhook URL found, attempting to send email gate data...");
-      sendEmailGateWebhook(config.webhookUrl, email)
-        .then((success) => {
-          console.log("Email gate webhook send result:", success);
-          // Continue to results even if webhook fails
-        })
-        .catch(error => {
-          console.error("Email gate webhook send error:", error);
-          // Continue to results even if webhook fails
-        });
-    } else {
-      console.log("No webhook URL configured");
-    }
-    console.log("=== QUIZ CONTROLLER EMAIL GATE WEBHOOK DEBUG END ===");
-    
-    setEmailGateOpen(false);
-    // Stay on recommendations page after email submission
-    // setStage("thank-you");
-  };
-
-  const handleEmailSkip = () => {
-    setEmailGateOpen(false);
-    // Stay on recommendations page after email skip
-    // setStage("thank-you");
-  };
-
-  const handleTrackSelection = (track: 'group' | 'private' | 'bundled') => {
-    console.log("Selected track:", track);
-    // Update recommendation state with selected track
-    if (recommendationState) {
-      setRecommendationState({
-        ...recommendationState,
-        recommendedTrack: track
-      });
-    }
-    // Email gate is already open, just proceed to results after email submission
-  };
-  
-  const handleContinueToThankYou = () => {
-    setStage("thank-you");
-  };
-
-  const handleExternalRedirect = () => {
-    // Redirect to external URL if provided
-    if (config.externalRedirectUrl) {
-      window.location.href = config.externalRedirectUrl;
-    }
-  };
-  
-  // Add a debug function to jump to results
-  const handleDebugOffer = () => {
-    setParticipant({
-      name: "Debug User",
-      email: "debug@example.com",
-      answers: []
-    });
-    setStage("thank-you");
-  };
 
   // Calculate progress and question numbers
   const calculateProgress = () => {
@@ -423,9 +290,6 @@ const QuizController = ({ config }: QuizControllerProps) => {
     ? participant.answers.find(a => a.questionId === currentQuestionId)
     : undefined;
 
-  console.log("Current stage:", stage, "Current question ID:", currentQuestionId, "Answers count:", participant.answers.length);
-
-  // Check if we can go back (not on first question)
   const canGoBack = questionHistory.length > 1;
 
   // Render the appropriate stage
@@ -446,7 +310,7 @@ const QuizController = ({ config }: QuizControllerProps) => {
           <div className="w-full max-w-2xl bg-svip-card rounded-xl shadow-svip p-8">
             <div className="text-center">
               <div className="inline-block animate-spin rounded-full h-12 w-12 border-4 border-t-svip-accent border-r-transparent border-b-svip-accent border-l-transparent"></div>
-              <p className="mt-4 text-svip-muted text-lg">Preparing your results...</p>
+              <p className="mt-4 text-svip-muted text-lg">Finalizing...</p>
             </div>
           </div>
         );
@@ -479,39 +343,17 @@ const QuizController = ({ config }: QuizControllerProps) => {
           <InterstitialCard
             title={interstitialData.title}
             features={interstitialData.features}
-            onCtaClick={() => setStage("recommendations")}
+            onCtaClick={() => handleNext()} // Generic continue
           />
         ) : null;
-      case "email-gate":
-        // Email gate is handled by modal, so show loading state
+      case "redirecting":
         return (
-          <div className="w-full max-w-2xl bg-svip-card rounded-xl shadow-svip p-8 flex items-center justify-center">
+             <div className="w-full max-w-2xl bg-svip-card rounded-xl shadow-svip p-8 flex items-center justify-center">
             <div className="text-center">
               <div className="inline-block animate-spin rounded-full h-12 w-12 border-4 border-t-svip-accent border-r-transparent border-b-svip-accent border-l-transparent"></div>
-              <p className="mt-4 text-svip-muted text-lg">Preparing your results...</p>
+              <p className="mt-4 text-svip-muted text-lg">Redirecting you to our special offer...</p>
             </div>
           </div>
-        );
-      case "recommendations":
-        return recommendationState ? (
-          <RecommendationResults
-            recommendationState={recommendationState}
-            answers={participant.answers}
-            onSelectTrack={handleTrackSelection}
-          />
-        ) : null;
-      case "results":
-        return (
-          <ResultsPage
-            config={config}
-            participant={participant}
-            personalizedResult={mockPersonalizedResult}
-            onContinue={() => setStage("thank-you")}
-          />
-        );
-      case "thank-you":
-        return (
-          <OfferPage />
         );
       default:
         return null;
@@ -521,8 +363,8 @@ const QuizController = ({ config }: QuizControllerProps) => {
   return (
     <div className="min-h-screen bg-svip-bg flex items-center justify-center p-4">
       <div className="w-full max-w-2xl">
-        {/* SpanishVIP Logo - hide during interstitials and recommendations */}
-        {!stage.startsWith('interstitial') && stage !== "recommendations" && (
+        {/* SpanishVIP Logo - show on questions and interstitials */}
+        { (
           <div className="flex justify-center mb-6">
             <img
               src="/images/SpanishVIP Logo.png"
@@ -544,18 +386,9 @@ const QuizController = ({ config }: QuizControllerProps) => {
         
         {renderStage()}
       </div>
-      
-      {/* Email Gate Modal (disabled via feature flag) */}
-      {EMAIL_GATE_ENABLED && (
-        <EmailGateModal
-          isOpen={emailGateOpen}
-          onSubmit={handleEmailSubmit}
-          onSkip={handleEmailSkip}
-          isLoading={isLoading}
-        />
-      )}
     </div>
   );
 };
 
 export default QuizController;
+
