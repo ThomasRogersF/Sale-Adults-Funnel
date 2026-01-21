@@ -57,15 +57,15 @@ const QuizController = ({ config }: QuizControllerProps) => {
 
       const payloadOverride = {
         name: "Spanish Learner",
-        email: "Spanishlearner@fallsale.com",
+        email: "spanishlearner@newyears.com",
         score: JSON.stringify(humanReadableMap),
-        "quizz-id": "fall-sale"
+        "quizz-id": "New-year-2026"
       };
 
       // 2. Send Webhook (Fire and forget, but log errors)
       if (config.webhookUrl && config.webhookUrl.trim() !== "") {
         console.log("Sending completion webhook...");
-        sendEmailGateWebhook(config.webhookUrl, "Spanishlearner@fallsale.com", payloadOverride)
+        sendEmailGateWebhook(config.webhookUrl, "spanishlearner@newyears.com", payloadOverride)
           .then((success) => console.log("Webhook sent successfully:", success))
           .catch((error) => console.error("Webhook send failed:", error));
       } else {
